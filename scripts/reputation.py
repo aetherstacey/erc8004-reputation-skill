@@ -284,6 +284,9 @@ def cmd_give(args):
     agent_id = parse_agent_id(args.agent_id)
     value = int(args.value)
     value_decimals = int(args.decimals)
+    if value_decimals < 0 or value_decimals > 18:
+        print("Error: --decimals must be between 0 and 18 (per ERC-8004 spec)", file=sys.stderr)
+        sys.exit(1)
     tag1 = args.tag1 or ""
     tag2 = args.tag2 or ""
     endpoint = args.endpoint or ""
