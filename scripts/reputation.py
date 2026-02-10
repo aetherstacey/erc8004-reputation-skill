@@ -7,9 +7,10 @@ Part of the OpenClaw skill ecosystem.
 
 Usage:
     python reputation.py lookup <agentId> [--chain base|ethereum|polygon|monad|bnb]
-    python reputation.py give <agentId> <score> [--tag1 TAG] [--tag2 TAG] [--chain CHAIN]
+    python reputation.py give <agentId> <value> [--tag1 TAG] [--tag2 TAG] [--chain CHAIN]
     python reputation.py my-rep <agentId>
     python reputation.py clients <agentId> [--chain CHAIN]
+    python reputation.py feedback <agentId> <clientAddress> <feedbackIndex> [--chain CHAIN]
     python reputation.py revoke <agentId> <feedbackIndex> [--chain CHAIN]
 """
 
@@ -17,7 +18,6 @@ import argparse
 import json
 import os
 import sys
-from typing import Optional, Tuple
 
 from web3 import Web3
 from eth_account import Account
@@ -26,528 +26,497 @@ from eth_account import Account
 # CONSTANTS
 # =============================================================================
 
-# Contract addresses (same on all chains)
 IDENTITY_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
 REPUTATION_REGISTRY = "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63"
 
-# Chain configurations
 CHAINS = {
-    "base": {
-        "id": 8453,
-        "rpc": "https://mainnet.base.org",
-        "name": "Base",
-        "symbol": "ETH",
-    },
-    "ethereum": {
-        "id": 1,
-        "rpc": "https://eth.llamarpc.com",
-        "name": "Ethereum",
-        "symbol": "ETH",
-    },
-    "polygon": {
-        "id": 137,
-        "rpc": "https://polygon-rpc.com",
-        "name": "Polygon",
-        "symbol": "MATIC",
-    },
-    "monad": {
-        "id": 143,
-        "rpc": "https://rpc.monad.xyz",
-        "name": "Monad",
-        "symbol": "MON",
-    },
-    "bnb": {
-        "id": 56,
-        "rpc": "https://bsc-rpc.publicnode.com",
-        "name": "BNB Chain",
-        "symbol": "BNB",
-    },
+    "base": {"id": 8453, "rpc": "https://mainnet.base.org", "name": "Base", "symbol": "ETH"},
+    "ethereum": {"id": 1, "rpc": "https://ethereum-rpc.publicnode.com", "name": "Ethereum", "symbol": "ETH"},
+    "polygon": {"id": 137, "rpc": "https://polygon-rpc.com", "name": "Polygon", "symbol": "MATIC"},
+    "monad": {"id": 143, "rpc": "https://rpc.monad.xyz", "name": "Monad", "symbol": "MON"},
+    "bnb": {"id": 56, "rpc": "https://bsc-rpc.publicnode.com", "name": "BNB Chain", "symbol": "BNB"},
 }
 
 DEFAULT_CHAIN = "base"
 
-# Reputation Registry ABI (minimal, only what we need)
+# =============================================================================
+# ABI — matches the deployed ERC-8004 Reputation Registry contracts
+# Verified against live contracts on Base and Ethereum mainnet
+# =============================================================================
+
 REPUTATION_ABI = [
     {
         "inputs": [
-            {"internalType": "address", "name": "agent", "type": "address"},
-            {"internalType": "uint8", "name": "score", "type": "uint8"},
-            {"internalType": "bytes32", "name": "tag1", "type": "bytes32"},
-            {"internalType": "bytes32", "name": "tag2", "type": "bytes32"},
+            {"name": "agentId", "type": "uint256"},
+            {"name": "value", "type": "int128"},
+            {"name": "valueDecimals", "type": "uint8"},
+            {"name": "tag1", "type": "string"},
+            {"name": "tag2", "type": "string"},
+            {"name": "endpoint", "type": "string"},
+            {"name": "feedbackURI", "type": "string"},
+            {"name": "feedbackHash", "type": "bytes32"}
         ],
         "name": "giveFeedback",
         "outputs": [],
         "stateMutability": "nonpayable",
-        "type": "function",
+        "type": "function"
     },
     {
         "inputs": [
-            {"internalType": "address", "name": "agent", "type": "address"},
-            {"internalType": "uint256", "name": "index", "type": "uint256"},
+            {"name": "agentId", "type": "uint256"},
+            {"name": "clientAddress", "type": "address"},
+            {"name": "feedbackIndex", "type": "uint64"}
         ],
         "name": "readFeedback",
         "outputs": [
-            {"internalType": "address", "name": "reviewer", "type": "address"},
-            {"internalType": "uint8", "name": "score", "type": "uint8"},
-            {"internalType": "bytes32", "name": "tag1", "type": "bytes32"},
-            {"internalType": "bytes32", "name": "tag2", "type": "bytes32"},
-            {"internalType": "uint256", "name": "timestamp", "type": "uint256"},
-            {"internalType": "bool", "name": "revoked", "type": "bool"},
+            {"name": "value", "type": "int128"},
+            {"name": "valueDecimals", "type": "uint8"},
+            {"name": "tag1", "type": "string"},
+            {"name": "tag2", "type": "string"},
+            {"name": "isRevoked", "type": "bool"}
         ],
         "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [{"internalType": "address", "name": "agent", "type": "address"}],
-        "name": "readAllFeedback",
-        "outputs": [
-            {
-                "components": [
-                    {"internalType": "address", "name": "reviewer", "type": "address"},
-                    {"internalType": "uint8", "name": "score", "type": "uint8"},
-                    {"internalType": "bytes32", "name": "tag1", "type": "bytes32"},
-                    {"internalType": "bytes32", "name": "tag2", "type": "bytes32"},
-                    {"internalType": "uint256", "name": "timestamp", "type": "uint256"},
-                    {"internalType": "bool", "name": "revoked", "type": "bool"},
-                ],
-                "internalType": "struct IReputationRegistry.Feedback[]",
-                "name": "",
-                "type": "tuple[]",
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [{"internalType": "address", "name": "agent", "type": "address"}],
-        "name": "getSummary",
-        "outputs": [
-            {"internalType": "uint256", "name": "totalScore", "type": "uint256"},
-            {"internalType": "uint256", "name": "feedbackCount", "type": "uint256"},
-            {"internalType": "uint256", "name": "averageScore", "type": "uint256"},
-        ],
-        "stateMutability": "view",
-        "type": "function",
+        "type": "function"
     },
     {
         "inputs": [
-            {"internalType": "address", "name": "agent", "type": "address"},
-            {"internalType": "uint256", "name": "index", "type": "uint256"},
+            {"name": "agentId", "type": "uint256"},
+            {"name": "clientAddresses", "type": "address[]"},
+            {"name": "tag1", "type": "string"},
+            {"name": "tag2", "type": "string"},
+            {"name": "includeRevoked", "type": "bool"}
+        ],
+        "name": "readAllFeedback",
+        "outputs": [
+            {"name": "clients", "type": "address[]"},
+            {"name": "feedbackIndexes", "type": "uint64[]"},
+            {"name": "values", "type": "int128[]"},
+            {"name": "valueDecimals", "type": "uint8[]"},
+            {"name": "tag1s", "type": "string[]"},
+            {"name": "tag2s", "type": "string[]"},
+            {"name": "revokedStatuses", "type": "bool[]"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"name": "agentId", "type": "uint256"},
+            {"name": "clientAddresses", "type": "address[]"},
+            {"name": "tag1", "type": "string"},
+            {"name": "tag2", "type": "string"}
+        ],
+        "name": "getSummary",
+        "outputs": [
+            {"name": "count", "type": "uint64"},
+            {"name": "summaryValue", "type": "int128"},
+            {"name": "summaryValueDecimals", "type": "uint8"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"name": "agentId", "type": "uint256"},
+            {"name": "feedbackIndex", "type": "uint64"}
         ],
         "name": "revokeFeedback",
         "outputs": [],
         "stateMutability": "nonpayable",
-        "type": "function",
+        "type": "function"
     },
     {
-        "inputs": [{"internalType": "address", "name": "agent", "type": "address"}],
+        "inputs": [{"name": "agentId", "type": "uint256"}],
         "name": "getClients",
-        "outputs": [
-            {"internalType": "address[]", "name": "", "type": "address[]"}
-        ],
+        "outputs": [{"name": "", "type": "address[]"}],
         "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [{"internalType": "address", "name": "agent", "type": "address"}],
-        "name": "getLastIndex",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function",
+        "type": "function"
     },
     {
         "inputs": [
-            {"internalType": "address", "name": "agent", "type": "address"},
-            {"internalType": "uint256", "name": "feedbackIndex", "type": "uint256"},
-            {"internalType": "string", "name": "response", "type": "string"},
+            {"name": "agentId", "type": "uint256"},
+            {"name": "clientAddress", "type": "address"}
+        ],
+        "name": "getLastIndex",
+        "outputs": [{"name": "", "type": "uint64"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"name": "agentId", "type": "uint256"},
+            {"name": "clientAddress", "type": "address"},
+            {"name": "feedbackIndex", "type": "uint64"},
+            {"name": "responseURI", "type": "string"},
+            {"name": "responseHash", "type": "bytes32"}
         ],
         "name": "appendResponse",
         "outputs": [],
         "stateMutability": "nonpayable",
-        "type": "function",
+        "type": "function"
     },
     {
         "inputs": [
-            {"internalType": "address", "name": "agent", "type": "address"},
-            {"internalType": "uint256", "name": "feedbackIndex", "type": "uint256"},
+            {"name": "agentId", "type": "uint256"},
+            {"name": "clientAddress", "type": "address"},
+            {"name": "feedbackIndex", "type": "uint64"},
+            {"name": "responders", "type": "address[]"}
         ],
         "name": "getResponseCount",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "outputs": [{"name": "count", "type": "uint64"}],
         "stateMutability": "view",
-        "type": "function",
+        "type": "function"
     },
 ]
-
 
 # =============================================================================
 # HELPERS
 # =============================================================================
 
-
 def get_web3(chain: str) -> Web3:
-    """Get Web3 instance for the specified chain."""
+    """Connect to chain RPC."""
     if chain not in CHAINS:
-        raise ValueError(f"Unsupported chain: {chain}. Use: {', '.join(CHAINS.keys())}")
-    
-    rpc_url = CHAINS[chain]["rpc"]
-    w3 = Web3(Web3.HTTPProvider(rpc_url))
-    
+        print(f"Unknown chain: {chain}. Options: {', '.join(CHAINS.keys())}", file=sys.stderr)
+        sys.exit(1)
+    w3 = Web3(Web3.HTTPProvider(CHAINS[chain]["rpc"]))
     if not w3.is_connected():
-        raise ConnectionError(f"Failed to connect to {chain} RPC: {rpc_url}")
-    
+        print(f"Failed to connect to {CHAINS[chain]['name']} RPC", file=sys.stderr)
+        sys.exit(1)
     return w3
 
 
 def get_contract(w3: Web3):
     """Get Reputation Registry contract instance."""
-    return w3.eth.contract(
-        address=Web3.to_checksum_address(REPUTATION_REGISTRY),
-        abi=REPUTATION_ABI,
-    )
+    return w3.eth.contract(address=REPUTATION_REGISTRY, abi=REPUTATION_ABI)
 
 
-def get_wallet() -> Optional[Account]:
+def get_wallet():
     """Load wallet from environment variables."""
     mnemonic = os.environ.get("ERC8004_MNEMONIC")
     private_key = os.environ.get("ERC8004_PRIVATE_KEY")
-    
+
     if mnemonic:
         Account.enable_unaudited_hdwallet_features()
         return Account.from_mnemonic(mnemonic)
     elif private_key:
-        # Strip 0x prefix if present
-        if private_key.startswith("0x"):
-            private_key = private_key[2:]
+        if not private_key.startswith("0x"):
+            private_key = "0x" + private_key
         return Account.from_key(private_key)
-    
-    return None
+    else:
+        print("Wallet not configured. Set ERC8004_MNEMONIC or ERC8004_PRIVATE_KEY", file=sys.stderr)
+        sys.exit(1)
 
 
-def validate_address(address: str) -> str:
-    """Validate and checksum an Ethereum address."""
-    if not address.startswith("0x") or len(address) != 42:
-        raise ValueError(f"Invalid address format: {address}")
-    
+def parse_agent_id(raw: str) -> int:
+    """Parse agent ID — accepts integer or 0x-prefixed hex."""
     try:
-        return Web3.to_checksum_address(address)
-    except Exception:
-        raise ValueError(f"Invalid address: {address}")
+        if raw.startswith("0x"):
+            return int(raw, 16)
+        return int(raw)
+    except ValueError:
+        print(f"Invalid agent ID: {raw}. Must be an integer (e.g., 16700) or hex.", file=sys.stderr)
+        sys.exit(1)
 
 
-def bytes32_from_string(s: str) -> bytes:
-    """Convert a string to bytes32 (padded or truncated)."""
-    if not s:
-        return b'\x00' * 32
-    
-    encoded = s.encode('utf-8')[:32]
-    return encoded.ljust(32, b'\x00')
-
-
-def string_from_bytes32(b: bytes) -> str:
-    """Convert bytes32 to a string (strip null bytes)."""
-    return b.rstrip(b'\x00').decode('utf-8', errors='ignore')
-
-
-def format_wei(wei: int, symbol: str) -> str:
-    """Format wei as readable token amount."""
-    eth = wei / 10**18
-    return f"{eth:.6f} {symbol}"
+def format_value(value: int, decimals: int) -> str:
+    """Format a feedback value with its decimals."""
+    if decimals == 0:
+        return str(value)
+    return f"{value / (10 ** decimals):.{decimals}f}"
 
 
 # =============================================================================
 # COMMANDS
 # =============================================================================
 
-
 def cmd_lookup(args):
     """Look up an agent's reputation summary."""
-    agent = validate_address(args.agent_id)
+    agent_id = parse_agent_id(args.agent_id)
     chain = args.chain or DEFAULT_CHAIN
-    
     w3 = get_web3(chain)
     contract = get_contract(w3)
-    
-    try:
-        total_score, feedback_count, avg_score = contract.functions.getSummary(agent).call()
-    except Exception as e:
-        # Contract may revert for addresses with no feedback, treat as no feedback
-        error_str = str(e).lower()
-        if 'revert' in error_str or 'execution' in error_str:
-            total_score, feedback_count, avg_score = 0, 0, 0
-        else:
-            print(f"Error querying reputation: {e}", file=sys.stderr)
-            sys.exit(1)
-    
-    print(f"Agent: {agent}")
+
+    print(f"Agent ID: {agent_id}")
     print(f"Chain: {chain} ({CHAINS[chain]['name']})")
-    
-    if feedback_count == 0:
+
+    # Get clients first (needed for getSummary)
+    try:
+        clients = contract.functions.getClients(agent_id).call()
+    except Exception as e:
+        print(f"Error querying clients: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not clients:
         print("Score: No feedback yet")
         return
-    
-    print(f"Score: {avg_score} ({feedback_count} reviews)")
-    
-    # Get detailed feedback to count tags
+
+    print(f"Reviewers: {len(clients)}")
+
+    # Get summary across all clients
     try:
-        all_feedback = contract.functions.readAllFeedback(agent).call()
-        tag_counts = {}
-        
-        for fb in all_feedback:
-            if fb[5]:  # revoked
-                continue
-            
-            tag1 = string_from_bytes32(fb[2])
-            tag2 = string_from_bytes32(fb[3])
-            
-            if tag1:
-                tag_counts[tag1] = tag_counts.get(tag1, 0) + 1
-            if tag2:
-                tag_counts[tag2] = tag_counts.get(tag2, 0) + 1
-        
-        if tag_counts:
-            sorted_tags = sorted(tag_counts.items(), key=lambda x: -x[1])
-            tag_str = ", ".join(f"{tag} ({count})" for tag, count in sorted_tags[:5])
-            print(f"Tags: {tag_str}")
-    except Exception:
-        pass  # Tags are optional info
+        count, value, decimals = contract.functions.getSummary(agent_id, clients, "", "").call()
+        print(f"Feedback count: {count}")
+        print(f"Summary value: {format_value(value, decimals)}")
+        if count > 0 and decimals == 0:
+            print(f"Average: {value / count:.1f}")
+    except Exception as e:
+        print(f"Error querying summary: {e}", file=sys.stderr)
+
+    # Show individual feedback
+    print(f"\nFeedback details:")
+    for client in clients:
+        try:
+            last_idx = contract.functions.getLastIndex(agent_id, client).call()
+            for idx in range(1, last_idx + 1):
+                fb = contract.functions.readFeedback(agent_id, client, idx).call()
+                value, val_dec, tag1, tag2, revoked = fb
+                status = " [REVOKED]" if revoked else ""
+                tags = ""
+                if tag1 or tag2:
+                    tags = f" ({', '.join(t for t in [tag1, tag2] if t)})"
+                print(f"  #{idx} from {client[:10]}...{client[-6:]}: {format_value(value, val_dec)}{tags}{status}")
+        except Exception as e:
+            print(f"  Error reading feedback from {client[:10]}...: {e}")
 
 
 def cmd_give(args):
     """Give feedback to an agent."""
-    agent = validate_address(args.agent_id)
-    score = int(args.score)
+    agent_id = parse_agent_id(args.agent_id)
+    value = int(args.value)
+    value_decimals = int(args.decimals)
+    tag1 = args.tag1 or ""
+    tag2 = args.tag2 or ""
+    endpoint = args.endpoint or ""
     chain = args.chain or DEFAULT_CHAIN
-    
-    if not 0 <= score <= 100:
-        print("Error: Score must be between 0 and 100", file=sys.stderr)
-        sys.exit(1)
-    
-    wallet = get_wallet()
-    if not wallet:
-        print("Error: Wallet not configured. Set ERC8004_MNEMONIC or ERC8004_PRIVATE_KEY", file=sys.stderr)
-        sys.exit(1)
-    
+
     w3 = get_web3(chain)
     contract = get_contract(w3)
-    
-    tag1 = bytes32_from_string(args.tag1 or "")
-    tag2 = bytes32_from_string(args.tag2 or "")
-    
-    # Build transaction
+    acct = get_wallet()
+
+    print(f"Giving feedback to agent {agent_id} on {CHAINS[chain]['name']}")
+    print(f"Value: {format_value(value, value_decimals)}, Tags: {tag1 or '(none)'}, {tag2 or '(none)'}")
+    print(f"From: {acct.address}")
+
+    # Build tx
+    empty_hash = b'\x00' * 32
     try:
-        nonce = w3.eth.get_transaction_count(wallet.address)
-        gas_price = w3.eth.gas_price
-        
-        tx = contract.functions.giveFeedback(
-            agent, score, tag1, tag2
-        ).build_transaction({
-            'from': wallet.address,
-            'nonce': nonce,
-            'gasPrice': gas_price,
-            'chainId': CHAINS[chain]['id'],
-        })
-        
-        # Estimate gas
-        tx['gas'] = w3.eth.estimate_gas(tx)
-        
-        # Sign and send
-        signed = wallet.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        
-        # Wait for receipt
-        print("Submitting feedback...")
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-        
-        if receipt['status'] == 1:
-            gas_cost = receipt['gasUsed'] * gas_price
-            print(f"✓ Feedback submitted!")
-            print(f"  Agent: {agent}")
-            print(f"  Score: {score}")
-            if args.tag1 or args.tag2:
-                tags = [t for t in [args.tag1, args.tag2] if t]
-                print(f"  Tags: {', '.join(tags)}")
-            print(f"  Tx: {tx_hash.hex()}")
-            print(f"  Gas: {format_wei(gas_cost, CHAINS[chain]['symbol'])}")
-        else:
-            print(f"✗ Transaction failed: {tx_hash.hex()}", file=sys.stderr)
-            sys.exit(1)
-            
+        gas_estimate = contract.functions.giveFeedback(
+            agent_id, value, value_decimals, tag1, tag2, endpoint, "", empty_hash
+        ).estimate_gas({'from': acct.address})
     except Exception as e:
-        print(f"Error submitting feedback: {e}", file=sys.stderr)
+        print(f"Gas estimation failed: {e}", file=sys.stderr)
+        print("This may mean you own this agent (can't rate your own agent) or the agent ID is invalid.")
+        sys.exit(1)
+
+    gas_price = w3.eth.gas_price
+    cost = gas_estimate * gas_price
+    print(f"Gas: {gas_estimate} (~{w3.from_wei(cost, 'ether'):.8f} {CHAINS[chain]['symbol']})")
+
+    nonce = w3.eth.get_transaction_count(acct.address)
+    tx = contract.functions.giveFeedback(
+        agent_id, value, value_decimals, tag1, tag2, endpoint, "", empty_hash
+    ).build_transaction({
+        'chainId': CHAINS[chain]['id'],
+        'gas': int(gas_estimate * 1.2),
+        'gasPrice': gas_price,
+        'nonce': nonce,
+    })
+
+    signed = acct.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    print(f"TX sent: {tx_hash.hex()}")
+
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+    if receipt['status'] == 1:
+        print(f"✅ Feedback submitted! Gas used: {receipt['gasUsed']}")
+    else:
+        print("❌ Transaction failed!", file=sys.stderr)
         sys.exit(1)
 
 
 def cmd_my_rep(args):
-    """Check your own agent's reputation across all chains."""
-    agent = validate_address(args.agent_id)
-    
-    print(f"Reputation for: {agent}\n")
-    
-    for chain_name, chain_info in CHAINS.items():
+    """Check your own agent's reputation across chains."""
+    agent_id = parse_agent_id(args.agent_id)
+    chains_to_check = args.chains.split(",") if args.chains else list(CHAINS.keys())
+
+    print(f"Reputation for Agent ID: {agent_id}\n")
+
+    for chain in chains_to_check:
+        chain = chain.strip()
+        if chain not in CHAINS:
+            continue
         try:
-            w3 = get_web3(chain_name)
+            w3 = get_web3(chain)
             contract = get_contract(w3)
-            total_score, feedback_count, avg_score = contract.functions.getSummary(agent).call()
-            
-            if feedback_count > 0:
-                print(f"  {chain_info['name']}: {avg_score} ({feedback_count} reviews)")
-            else:
-                print(f"  {chain_info['name']}: No feedback")
+            clients = contract.functions.getClients(agent_id).call()
+            if not clients:
+                print(f"  {CHAINS[chain]['name']}: No feedback yet")
+                continue
+            count, value, decimals = contract.functions.getSummary(agent_id, clients, "", "").call()
+            avg = f" (avg: {value/count:.1f})" if count > 0 and decimals == 0 else ""
+            print(f"  {CHAINS[chain]['name']}: {count} reviews, value: {format_value(value, decimals)}{avg}")
         except Exception as e:
-            error_str = str(e).lower()
-            if 'revert' in error_str or 'execution' in error_str:
-                print(f"  {chain_info['name']}: No feedback")
-            else:
-                print(f"  {chain_info['name']}: Error - {e}")
+            print(f"  {CHAINS[chain]['name']}: Error - {e}")
 
 
 def cmd_clients(args):
-    """List all addresses that have given feedback to an agent."""
-    agent = validate_address(args.agent_id)
+    """List clients who gave feedback to an agent."""
+    agent_id = parse_agent_id(args.agent_id)
     chain = args.chain or DEFAULT_CHAIN
-    
     w3 = get_web3(chain)
     contract = get_contract(w3)
-    
+
+    print(f"Clients for Agent ID {agent_id} on {CHAINS[chain]['name']}:")
+
     try:
-        clients = contract.functions.getClients(agent).call()
-        
-        if not clients:
-            print(f"No clients have given feedback to {agent}")
-            return
-        
-        print(f"Clients who gave feedback to {agent}:")
-        print(f"Chain: {chain}\n")
-        
-        for i, client in enumerate(clients, 1):
-            print(f"  {i}. {client}")
-        
-        print(f"\nTotal: {len(clients)} client(s)")
-        
+        clients = contract.functions.getClients(agent_id).call()
     except Exception as e:
-        print(f"Error querying clients: {e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not clients:
+        print("  No clients yet")
+        return
+
+    for client in clients:
+        try:
+            last_idx = contract.functions.getLastIndex(agent_id, client).call()
+            print(f"  {client} ({last_idx} feedback{'s' if last_idx != 1 else ''})")
+        except Exception:
+            print(f"  {client}")
+
+
+def cmd_feedback(args):
+    """Read specific feedback."""
+    agent_id = parse_agent_id(args.agent_id)
+    client = Web3.to_checksum_address(args.client_address)
+    index = int(args.feedback_index)
+    chain = args.chain or DEFAULT_CHAIN
+    w3 = get_web3(chain)
+    contract = get_contract(w3)
+
+    try:
+        value, decimals, tag1, tag2, revoked = contract.functions.readFeedback(agent_id, client, index).call()
+        print(f"Agent: {agent_id}")
+        print(f"From: {client}")
+        print(f"Index: {index}")
+        print(f"Value: {format_value(value, decimals)}")
+        print(f"Tags: {tag1 or '(none)'}, {tag2 or '(none)'}")
+        print(f"Revoked: {revoked}")
+    except Exception as e:
+        print(f"Error reading feedback: {e}", file=sys.stderr)
         sys.exit(1)
 
 
 def cmd_revoke(args):
     """Revoke feedback you previously gave."""
-    agent = validate_address(args.agent_id)
+    agent_id = parse_agent_id(args.agent_id)
     index = int(args.feedback_index)
     chain = args.chain or DEFAULT_CHAIN
-    
-    wallet = get_wallet()
-    if not wallet:
-        print("Error: Wallet not configured. Set ERC8004_MNEMONIC or ERC8004_PRIVATE_KEY", file=sys.stderr)
-        sys.exit(1)
-    
     w3 = get_web3(chain)
     contract = get_contract(w3)
-    
+    acct = get_wallet()
+
+    print(f"Revoking feedback #{index} for agent {agent_id} on {CHAINS[chain]['name']}")
+
     try:
-        # Verify the feedback exists and belongs to us
-        feedback = contract.functions.readFeedback(agent, index).call()
-        reviewer = feedback[0]
-        
-        if reviewer.lower() != wallet.address.lower():
-            print(f"Error: Feedback at index {index} was not given by your wallet", file=sys.stderr)
-            print(f"  Reviewer: {reviewer}")
-            print(f"  Your address: {wallet.address}")
-            sys.exit(1)
-        
-        if feedback[5]:  # revoked
-            print(f"Feedback at index {index} is already revoked")
-            return
-        
-        # Build and send revoke transaction
-        nonce = w3.eth.get_transaction_count(wallet.address)
-        gas_price = w3.eth.gas_price
-        
-        tx = contract.functions.revokeFeedback(agent, index).build_transaction({
-            'from': wallet.address,
-            'nonce': nonce,
-            'gasPrice': gas_price,
-            'chainId': CHAINS[chain]['id'],
-        })
-        
-        tx['gas'] = w3.eth.estimate_gas(tx)
-        
-        signed = wallet.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        
-        print("Revoking feedback...")
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-        
-        if receipt['status'] == 1:
-            gas_cost = receipt['gasUsed'] * gas_price
-            print(f"✓ Feedback revoked!")
-            print(f"  Agent: {agent}")
-            print(f"  Index: {index}")
-            print(f"  Tx: {tx_hash.hex()}")
-            print(f"  Gas: {format_wei(gas_cost, CHAINS[chain]['symbol'])}")
-        else:
-            print(f"✗ Transaction failed: {tx_hash.hex()}", file=sys.stderr)
-            sys.exit(1)
-            
+        gas_estimate = contract.functions.revokeFeedback(agent_id, index).estimate_gas({'from': acct.address})
     except Exception as e:
-        print(f"Error revoking feedback: {e}", file=sys.stderr)
+        print(f"Failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    gas_price = w3.eth.gas_price
+    nonce = w3.eth.get_transaction_count(acct.address)
+
+    tx = contract.functions.revokeFeedback(agent_id, index).build_transaction({
+        'chainId': CHAINS[chain]['id'],
+        'gas': int(gas_estimate * 1.2),
+        'gasPrice': gas_price,
+        'nonce': nonce,
+    })
+
+    signed = acct.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    print(f"TX sent: {tx_hash.hex()}")
+
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+    if receipt['status'] == 1:
+        print(f"✅ Feedback revoked!")
+    else:
+        print("❌ Transaction failed!", file=sys.stderr)
         sys.exit(1)
 
 
 # =============================================================================
-# MAIN
+# CLI
 # =============================================================================
-
 
 def main():
     parser = argparse.ArgumentParser(
         description="ERC-8004 Reputation Registry CLI",
+        epilog="""Examples:
+  %(prog)s lookup 16700
+  %(prog)s lookup 16700 --chain ethereum
+  %(prog)s give 16700 85 --tag1 reliable --tag2 fast
+  %(prog)s give 16700 9977 --decimals 2 --tag1 uptime
+  %(prog)s my-rep 16700
+  %(prog)s clients 16700
+  %(prog)s feedback 16700 0xABC...DEF 1
+  %(prog)s revoke 16700 3""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s lookup 0x1234...abcd
-  %(prog)s give 0x1234...abcd 85 --tag1 reliable --tag2 fast
-  %(prog)s my-rep 0xYourAddress
-  %(prog)s clients 0x1234...abcd
-  %(prog)s revoke 0x1234...abcd 3
-        """,
     )
-    
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    
+
+    sub = parser.add_subparsers(dest="command")
+
     # lookup
-    p_lookup = subparsers.add_parser("lookup", help="Look up an agent's reputation")
-    p_lookup.add_argument("agent_id", help="Agent address (0x...)")
-    p_lookup.add_argument("--chain", choices=CHAINS.keys(), help=f"Chain (default: {DEFAULT_CHAIN})")
+    p_lookup = sub.add_parser("lookup", help="Look up an agent's reputation")
+    p_lookup.add_argument("agent_id", help="Agent ID (integer, e.g. 16700)")
+    p_lookup.add_argument("--chain", choices=CHAINS.keys(), default=DEFAULT_CHAIN)
     p_lookup.set_defaults(func=cmd_lookup)
-    
+
     # give
-    p_give = subparsers.add_parser("give", help="Give feedback to an agent")
-    p_give.add_argument("agent_id", help="Agent address (0x...)")
-    p_give.add_argument("score", type=int, help="Score (0-100)")
-    p_give.add_argument("--tag1", help="First tag (optional)")
-    p_give.add_argument("--tag2", help="Second tag (optional)")
-    p_give.add_argument("--chain", choices=CHAINS.keys(), help=f"Chain (default: {DEFAULT_CHAIN})")
+    p_give = sub.add_parser("give", help="Give feedback to an agent")
+    p_give.add_argument("agent_id", help="Agent ID (integer)")
+    p_give.add_argument("value", help="Feedback value (e.g. 85 for score, 9977 for 99.77%%)")
+    p_give.add_argument("--decimals", default="0", help="Value decimals (default: 0, meaning integer score)")
+    p_give.add_argument("--tag1", default="", help="Primary tag (e.g. 'reliable', 'uptime', 'starred')")
+    p_give.add_argument("--tag2", default="", help="Secondary tag (e.g. 'fast', 'quality')")
+    p_give.add_argument("--endpoint", default="", help="Endpoint being rated (optional)")
+    p_give.add_argument("--chain", choices=CHAINS.keys(), default=DEFAULT_CHAIN)
     p_give.set_defaults(func=cmd_give)
-    
+
     # my-rep
-    p_myrep = subparsers.add_parser("my-rep", help="Check your own reputation")
-    p_myrep.add_argument("agent_id", help="Your agent address (0x...)")
+    p_myrep = sub.add_parser("my-rep", help="Check your own reputation across chains")
+    p_myrep.add_argument("agent_id", help="Your agent ID (integer)")
+    p_myrep.add_argument("--chains", default=None, help="Comma-separated chains to check (default: all)")
     p_myrep.set_defaults(func=cmd_my_rep)
-    
+
     # clients
-    p_clients = subparsers.add_parser("clients", help="List clients who gave feedback")
-    p_clients.add_argument("agent_id", help="Agent address (0x...)")
-    p_clients.add_argument("--chain", choices=CHAINS.keys(), help=f"Chain (default: {DEFAULT_CHAIN})")
+    p_clients = sub.add_parser("clients", help="List clients who gave feedback")
+    p_clients.add_argument("agent_id", help="Agent ID (integer)")
+    p_clients.add_argument("--chain", choices=CHAINS.keys(), default=DEFAULT_CHAIN)
     p_clients.set_defaults(func=cmd_clients)
-    
+
+    # feedback
+    p_feedback = sub.add_parser("feedback", help="Read specific feedback entry")
+    p_feedback.add_argument("agent_id", help="Agent ID (integer)")
+    p_feedback.add_argument("client_address", help="Client address (0x...)")
+    p_feedback.add_argument("feedback_index", help="Feedback index (1-based)")
+    p_feedback.add_argument("--chain", choices=CHAINS.keys(), default=DEFAULT_CHAIN)
+    p_feedback.set_defaults(func=cmd_feedback)
+
     # revoke
-    p_revoke = subparsers.add_parser("revoke", help="Revoke your feedback")
-    p_revoke.add_argument("agent_id", help="Agent address (0x...)")
-    p_revoke.add_argument("feedback_index", type=int, help="Feedback index to revoke")
-    p_revoke.add_argument("--chain", choices=CHAINS.keys(), help=f"Chain (default: {DEFAULT_CHAIN})")
+    p_revoke = sub.add_parser("revoke", help="Revoke your feedback")
+    p_revoke.add_argument("agent_id", help="Agent ID (integer)")
+    p_revoke.add_argument("feedback_index", help="Feedback index to revoke")
+    p_revoke.add_argument("--chain", choices=CHAINS.keys(), default=DEFAULT_CHAIN)
     p_revoke.set_defaults(func=cmd_revoke)
-    
+
     args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
     args.func(args)
 
 

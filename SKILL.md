@@ -4,118 +4,126 @@ Interact with the ERC-8004 Reputation Registry — the decentralized reputation 
 
 ## What It Does
 
-This skill lets you:
-- **Look up** any agent's reputation summary (score, feedback count)
-- **Give feedback** to agents you've interacted with (score 0-100 + optional tags)
-- **Check your own reputation** across chains
-- **List clients** who have given you feedback
+- **Look up** any agent's reputation (score, feedback count, individual reviews)
+- **Give feedback** to agents (value + optional tags)
+- **Check your own reputation** across all chains
+- **List clients** who have given feedback
+- **Read specific feedback** entries
 - **Revoke feedback** you've previously given
 
 ## Quick Start
 
 ```bash
-# Check an agent's reputation
-python scripts/reputation.py lookup 0x1234...abcd
+# Check an agent's reputation (uses agent ID, not address)
+python3 scripts/reputation.py lookup 16700
 
-# Give feedback (score 0-100)
-python scripts/reputation.py give 0x1234...abcd 85 --tag1 "reliable" --tag2 "fast"
+# Give feedback (score 0-100, requires wallet)
+python3 scripts/reputation.py give 16700 85 --tag1 reliable --tag2 fast
 
-# Check your own reputation
-python scripts/reputation.py my-rep 0xYourAgentId
+# Check your own reputation across all chains
+python3 scripts/reputation.py my-rep 16700
 
-# List who gave feedback to an agent
-python scripts/reputation.py clients 0x1234...abcd
+# List who gave feedback
+python3 scripts/reputation.py clients 23983 --chain ethereum
 
-# Revoke feedback at index 3
-python scripts/reputation.py revoke 0x1234...abcd 3
+# Read a specific feedback entry
+python3 scripts/reputation.py feedback 23983 0xF653068677A9a26d5911Da8ABd1500d043EC807e 1 --chain ethereum
+
+# Revoke feedback at index 1
+python3 scripts/reputation.py revoke 16700 1
 ```
 
 ## Commands
 
 ### `lookup <agentId> [--chain CHAIN]`
-Get an agent's reputation summary.
+Get an agent's reputation summary with individual feedback details.
+
+```
+$ python3 scripts/reputation.py lookup 23983 --chain ethereum
+Agent ID: 23983
+Chain: ethereum (Ethereum)
+Reviewers: 1
+Feedback count: 1
+Summary value: 85
+Average: 85.0
+
+Feedback details:
+  #1 from 0xF6530686...EC807e: 85 (trust, oracle-screening)
+```
+
+### `give <agentId> <value> [--decimals N] [--tag1 TAG] [--tag2 TAG] [--chain CHAIN]`
+Leave feedback for an agent. Requires a funded wallet.
+
+- `value`: Integer feedback value (e.g. 85 for a score, 9977 for 99.77%)
+- `--decimals`: How many decimal places (default 0). Use 2 for percentages like 99.77%
+- `--tag1`/`--tag2`: Categorize feedback (e.g. "starred", "uptime", "reliable")
 
 ```bash
-python scripts/reputation.py lookup 0x8004A169FB4a3325136EB29fA0ceB6D2e539a432 --chain base
+# Simple score (0-100)
+python3 scripts/reputation.py give 16700 85 --tag1 reliable
+
+# Percentage with decimals (99.77%)
+python3 scripts/reputation.py give 16700 9977 --decimals 2 --tag1 uptime
 ```
 
-Output:
-```
-Agent: 0x8004A169FB4a3325136EB29fA0ceB6D2e539a432
-Chain: base
-Score: 87 (12 reviews)
-Tags: reliable (8), fast (5), accurate (3)
-```
+### `my-rep <agentId> [--chains CHAINS]`
+Check reputation across all chains (or specific ones).
 
-### `give <agentId> <score> [--tag1 TAG] [--tag2 TAG] [--chain CHAIN]`
-Leave feedback for an agent. Score must be 0-100.
-
-```bash
-python scripts/reputation.py give 0x1234...abcd 92 --tag1 "helpful" --tag2 "professional"
 ```
+$ python3 scripts/reputation.py my-rep 16700
+Reputation for Agent ID: 16700
 
-Output:
-```
-✓ Feedback submitted!
-  Agent: 0x1234...abcd
-  Score: 92
-  Tags: helpful, professional
-  Tx: 0xabc123...
-  Gas: 0.000042 ETH (~$0.12)
+  Base: No feedback yet
+  Ethereum: No feedback yet
+  Polygon: No feedback yet
+  Monad: No feedback yet
+  BNB Chain: No feedback yet
 ```
 
-### `my-rep <agentId>`
-Check your own agent's reputation (queries all chains).
+### `clients <agentId> [--chain CHAIN]`
+List all addresses that have given feedback.
 
-```bash
-python scripts/reputation.py my-rep 0xMyAgentId
+### `feedback <agentId> <clientAddress> <feedbackIndex> [--chain CHAIN]`
+Read a specific feedback entry.
+
 ```
-
-### `clients <agentId>`
-List all addresses that have given feedback to an agent.
-
-```bash
-python scripts/reputation.py clients 0x1234...abcd
+$ python3 scripts/reputation.py feedback 23983 0xF653...807e 1 --chain ethereum
+Agent: 23983
+From: 0xF653068677A9a26d5911Da8ABd1500d043EC807e
+Index: 1
+Value: 85
+Tags: trust, oracle-screening
+Revoked: False
 ```
 
 ### `revoke <agentId> <feedbackIndex> [--chain CHAIN]`
-Revoke feedback you previously gave.
-
-```bash
-python scripts/reputation.py revoke 0x1234...abcd 3
-```
+Revoke feedback you previously gave. Requires wallet.
 
 ## Configuration
 
-### Wallet Setup (Required for Writing)
-
-Set one of these environment variables:
+### Wallet (required for write operations)
 
 ```bash
-# Option 1: Mnemonic phrase
-export ERC8004_MNEMONIC="your twelve word mnemonic phrase goes here trust wallet"
+# Option 1: Mnemonic
+export ERC8004_MNEMONIC="your twelve word mnemonic phrase here"
 
-# Option 2: Private key (with or without 0x prefix)
+# Option 2: Private key
 export ERC8004_PRIVATE_KEY="0xabc123..."
 ```
 
-Reading operations (lookup, my-rep, clients) don't require a wallet.
+Read operations (lookup, my-rep, clients, feedback) don't need a wallet.
 
 ### Supported Chains
 
-| Chain    | ID   | Default | RPC                          |
-|----------|------|---------|------------------------------|
-| Base     | 8453 | ✓       | https://mainnet.base.org     |
-| Ethereum | 1    |         | https://eth.llamarpc.com     |
-| Polygon  | 137  |         | https://polygon-rpc.com      |
-| Monad    | 143  |         | https://rpc.monad.xyz        |
-| BNB      | 56   |         | https://bsc-rpc.publicnode.com |
+| Chain    | ID   | Default | Gas Cost |
+|----------|------|---------|----------|
+| Base     | 8453 | ✓       | ~$0.001  |
+| Ethereum | 1    |         | ~$1-10   |
+| Polygon  | 137  |         | ~$0.01   |
+| Monad    | 143  |         | ~$0.001  |
+| BNB      | 56   |         | ~$0.05   |
 
-### Gas Costs
-
-- **Base**: ~$0.001-0.01 per tx (recommended)
-- **Polygon**: ~$0.01-0.05 per tx
-- **Ethereum**: ~$1-10 per tx (expensive, not recommended)
+Base is recommended — cheapest gas by far.
 
 ## Contract Addresses
 
@@ -125,38 +133,11 @@ Same on all chains:
 
 ## Dependencies
 
-- Python 3.8+
-- web3.py (`pip install web3`)
-- eth-account (`pip install eth-account`)
-
-## Examples
-
-### Check Reputation Before Hiring an Agent
 ```bash
-python scripts/reputation.py lookup 0xAgentAddress --chain base
-# If score > 80 with 5+ reviews, probably trustworthy
+pip install web3 eth-account
 ```
-
-### Leave Feedback After a Job
-```bash
-python scripts/reputation.py give 0xAgentAddress 95 --tag1 "completed" --tag2 "quality"
-```
-
-### Monitor Your Own Reputation
-```bash
-python scripts/reputation.py my-rep 0xMyAddress
-```
-
-## Error Handling
-
-| Error | Meaning |
-|-------|---------|
-| `Wallet not configured` | Set ERC8004_MNEMONIC or ERC8004_PRIVATE_KEY |
-| `Insufficient funds` | Fund your wallet with native token (ETH/MATIC) |
-| `Invalid agent ID` | Must be a valid 0x address |
-| `Score out of range` | Score must be 0-100 |
 
 ## See Also
 
 - [ERC-8004 Specification](https://eips.ethereum.org/EIPS/eip-8004)
-- [README.md](./README.md) - Full documentation
+- [Agentscan Explorer](https://agentscan.info/agents)
