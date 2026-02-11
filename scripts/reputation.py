@@ -450,6 +450,107 @@ def cmd_revoke(args):
         sys.exit(1)
 
 
+def cmd_leaderboard(args):
+    """Show top agents by reputation score from Agentscan."""
+    import urllib.request
+    import urllib.error
+
+    chain_filter = args.chain
+    limit = args.limit or 20
+
+    print(f"Fetching reputation leaderboard...")
+    if chain_filter:
+        print(f"  Filtering by chain: {chain_filter}")
+
+    # Query Agentscan API
+    try:
+        url = f"https://agentscan.info/api/agents?page_size=100"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "ERC8004-Reputation/1.0",
+            "Accept": "application/json"
+        })
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        print(f"API Error: HTTP {e.code}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"Network Error: {e.reason}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    agents = data.get("items", [])
+
+    # Filter by chain if specified
+    if chain_filter:
+        chain_lower = chain_filter.lower()
+        filtered = []
+        for agent in agents:
+            network = (agent.get("network_name") or "").lower()
+            if chain_lower in network or chain_lower == str(agent.get("network_id", "")):
+                filtered.append(agent)
+        agents = filtered
+
+    # Filter to only agents with reputation scores and sort
+    agents_with_rep = []
+    for agent in agents:
+        rep = agent.get("reputation_score")
+        if rep is not None:
+            try:
+                agents_with_rep.append((float(rep), agent))
+            except (ValueError, TypeError):
+                pass
+
+    # Sort by reputation (highest first)
+    agents_with_rep.sort(key=lambda x: x[0], reverse=True)
+    agents_with_rep = agents_with_rep[:limit]
+
+    if not agents_with_rep:
+        print("\nNo agents with reputation scores found.")
+        return
+
+    # Print leaderboard
+    chain_suffix = f" on {chain_filter}" if chain_filter else ""
+    print(f"\n{'='*70}")
+    print(f"  TOP {len(agents_with_rep)} AGENTS BY REPUTATION{chain_suffix}")
+    print(f"{'='*70}\n")
+
+    print(f"{'#':>3}  {'Name':<25} {'Chain':<12} {'Score':>8} {'Reviews':>8}")
+    print("-" * 70)
+
+    for rank, (score, agent) in enumerate(agents_with_rep, 1):
+        name = (agent.get("name") or agent.get("address", "")[:10])[:24]
+        chain = (agent.get("network_name") or "-")[:11]
+
+        # Get feedback count if available (from API or estimate)
+        feedback_count = agent.get("feedback_count", "-")
+        if feedback_count == "-":
+            # Try to get from skills/domains as proxy for activity
+            skills = agent.get("skills") or []
+            domains = agent.get("domains") or []
+            if skills or domains:
+                feedback_count = "active"
+            else:
+                feedback_count = "-"
+
+        # Format score with stars
+        if score >= 80:
+            score_str = f"{score:>6.1f} ★★★"
+        elif score >= 50:
+            score_str = f"{score:>6.1f} ★★"
+        elif score > 0:
+            score_str = f"{score:>6.1f} ★"
+        else:
+            score_str = f"{score:>6.1f}"
+
+        print(f"{rank:>3}  {name:<25} {chain:<12} {score_str:>11} {str(feedback_count):>8}")
+
+    print("\n" + "=" * 70)
+    print(f"Data source: Agentscan.info")
+
+
 # =============================================================================
 # CLI
 # =============================================================================
@@ -514,6 +615,12 @@ def main():
     p_revoke.add_argument("feedback_index", help="Feedback index to revoke")
     p_revoke.add_argument("--chain", choices=CHAINS.keys(), default=DEFAULT_CHAIN)
     p_revoke.set_defaults(func=cmd_revoke)
+
+    # leaderboard
+    p_leaderboard = sub.add_parser("leaderboard", help="Top agents by reputation score")
+    p_leaderboard.add_argument("--chain", "-c", help="Filter by chain (base, ethereum, polygon, monad, bnb)")
+    p_leaderboard.add_argument("--limit", "-l", type=int, default=20, help="Number of results (default: 20)")
+    p_leaderboard.set_defaults(func=cmd_leaderboard)
 
     args = parser.parse_args()
     if not args.command:
