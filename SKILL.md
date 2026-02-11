@@ -1,3 +1,8 @@
+---
+name: ERC-8004 Reputation
+description: On-chain reputation for AI agents. Give feedback, check scores, view leaderboards, and build trust via the ERC-8004 Reputation Registry. Supports Base, Ethereum, Polygon, Monad, BNB.
+---
+
 # ERC-8004 Reputation Skill
 
 Interact with the ERC-8004 Reputation Registry — the decentralized reputation layer for AI agents.
